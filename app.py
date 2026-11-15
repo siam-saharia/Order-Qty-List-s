@@ -55,7 +55,7 @@ def detect_color(ref):
     found = [k for k in COLOR_KEYWORDS if re.search(re.escape(k), ref, re.I)]
     # drop shorter keywords contained in longer ones (e.g. "Grey" inside "Euro Grey")
     found = [k for k in found if not any(k != o and k.lower() in o.lower() for o in found)]
-    return " + ".join(found) if found else ref  # fallback: show full reference
+    return " + ".join(found) if found else ""
 
 
 @st.cache_data(show_spinner="Reading PDFs...")
@@ -78,6 +78,7 @@ def parse_packing_pdfs(file_blobs, weight_factor, color_keywords):
                 m = re.match(r"^(\d{8})\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+DGU\s+(.*)$", lines[i])
                 if m:
                     labels = set()
+                    extra = []
                     j = i + 1
                     while j < len(lines):
                         l2 = lines[j]
@@ -90,6 +91,8 @@ def parse_packing_pdfs(file_blobs, weight_factor, color_keywords):
                         lm = re.search(r"^(029\d+)", l2)
                         if lm:
                             labels.add(lm.group(1))
+                        else:
+                            extra.append(l2)
                         j += 1
                     rows.append(
                         dict(
@@ -101,6 +104,7 @@ def parse_packing_pdfs(file_blobs, weight_factor, color_keywords):
                             rack=rack,
                             date=date,
                             labels=labels,
+                            desc=" ".join(extra),
                         )
                     )
                     i = j - 1
@@ -117,7 +121,7 @@ def parse_packing_pdfs(file_blobs, weight_factor, color_keywords):
             items[key] = dict(
                 order_no=r["order_no"], item_no=r["item_no"], ref=r["ref"],
                 width=r["width"], height=r["height"], sqm=sqm,
-                weight=sqm * weight_factor, labels=set(), boxes={},
+                weight=sqm * weight_factor, labels=set(), boxes={}, desc=r["desc"],
             )
         it = items[key]
         new = r["labels"] - it["labels"]  # ignore duplicate labels from overlapping PDFs
@@ -133,8 +137,9 @@ def parse_packing_pdfs(file_blobs, weight_factor, color_keywords):
         out.append({
             "Work Order": it["order_no"],
             "Item No.": it["item_no"],
-            "Color": detect_color(it["ref"]),
+            "Color": detect_color(it["ref"] + " " + it["desc"]),
             "Reference": it["ref"],
+            "Glass Description": it["desc"],
             "Width (mm)": int(it["width"]),
             "Height (mm)": int(it["height"]),
             "SQM (each)": round(it["sqm"], 3),
@@ -145,6 +150,11 @@ def parse_packing_pdfs(file_blobs, weight_factor, color_keywords):
             "Boxes / Delivery Date (Qty)": ", ".join(f"{k} ({v})" for k, v in it["boxes"].items()),
         })
     return pd.DataFrame(out)
+
+
+def raw_preview(blob, pages=2):
+    reader = pypdf.PdfReader(io.BytesIO(blob))
+    return "\n\n----- PAGE -----\n".join((p.extract_text() or "") for p in reader.pages[:pages])
 
 
 def build_order_summary(df):
@@ -201,7 +211,7 @@ def generate_excel(df_items, df_summary, df_color):
     write_sheet(ws2, df_color, [14, 40, 10])
 
     ws3 = wb.create_sheet("Delivery Advice")
-    write_sheet(ws3, df_items, [14, 10, 24, 32, 12, 12, 12, 14, 10, 12, 16, 80], wrap_cols=(12,))
+    write_sheet(ws3, df_items, [14, 10, 20, 16, 40, 12, 12, 12, 14, 10, 12, 16, 80], wrap_cols=(5, 13))
 
     out = io.BytesIO()
     wb.save(out)
@@ -225,6 +235,27 @@ if uploaded_files:
             st.warning("None of the listed work orders were found.")
             st.stop()
 
+        with st.expander("🔍 Raw PDF text (to see where the color is written)"):
+            st.code(raw_preview(blobs[0]))
+
+        # ---- Work Order -> Color mapping (auto-detected, editable) ----
+        auto = (
+            df[df["Color"] != ""].groupby("Work Order")["Color"]
+            .agg(lambda s: " + ".join(sorted(set(s)))).to_dict()
+        )
+        map_df = pd.DataFrame({
+            "Work Order": sorted(df["Work Order"].unique()),
+        })
+        map_df["Color"] = map_df["Work Order"].map(auto).fillna("")
+        st.subheader("🎨 Order Colors (fill in / correct once per order)")
+        map_df = st.data_editor(
+            map_df, hide_index=True, use_container_width=True,
+            disabled=["Work Order"], key="color_map",
+        )
+        df = df.copy()
+        df["Color"] = df["Work Order"].map(dict(zip(map_df["Work Order"], map_df["Color"])))
+        df["Color"] = df["Color"].fillna("").replace("", "Not set")
+
         df_summary, df_color = build_order_summary(df)
 
         c1, c2, c3 = st.columns(3)
@@ -235,7 +266,7 @@ if uploaded_files:
         st.subheader("📋 Order Summary (Color & Qty per Work Order)")
         st.dataframe(df_summary, use_container_width=True, hide_index=True)
 
-        st.subheader("🎨 Qty by Color per Work Order")
+        st.subheader("Qty by Color per Work Order")
         st.dataframe(df_color, use_container_width=True, hide_index=True)
 
         st.subheader("📄 Detailed Delivery Advice")
