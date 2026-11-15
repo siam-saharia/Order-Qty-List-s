@@ -52,55 +52,39 @@ def detect_color(ref):
 
 @st.cache_data(show_spinner="Reading PDFs...")
 def parse_packing_pdfs(file_blobs, weight_factor, color_keywords):
+    ITEM_RE = re.compile(r"^(\d{8})\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+DGU\s+(.*)$")
+    LABEL_RE = re.compile(r"^(029\d+)\b")
+    RACK_RE = re.compile(r"Packaging\s+(\d+)\s+packed")
     rows = []
-    last_rack = "Unknown"
     for blob in file_blobs:
         reader = pypdf.PdfReader(io.BytesIO(blob))
+        # Read the whole PDF as ONE continuous stream, so a label that falls on the
+        # next page still belongs to the item line at the bottom of the previous page.
+        stream = []
         for page in reader.pages:
             text = page.extract_text() or ""
-            m = re.search(r"Packaging\s+(\d+)\s+packed", text)
-            rack = m.group(1) if m else last_rack
-            last_rack = rack
             dm = re.search(r"Delivery date\s+([\d/]+)", text)
             date = fmt_date(dm.group(1)) if dm else "Unknown"
+            for l in text.split("\n"):
+                l = l.strip()
+                if l:
+                    stream.append((l, date))
 
-            lines = [l.strip() for l in text.split("\n") if l.strip()]
-            i = 0
-            while i < len(lines):
-                m = re.match(r"^(\d{8})\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+DGU\s+(.*)$", lines[i])
-                if m:
-                    labels = set()
-                    extra = []
-                    j = i + 1
-                    while j < len(lines):
-                        l2 = lines[j]
-                        if (
-                            re.match(r"^\d{8}\s+\d+\s+[\d.]+\s+[\d.]+\s+DGU", l2)
-                            or "Item quantity" in l2
-                            or "Order quantity" in l2
-                        ):
-                            break
-                        lm = re.search(r"^(029\d+)", l2)
-                        if lm:
-                            labels.add(lm.group(1))
-                        else:
-                            extra.append(l2)
-                        j += 1
-                    rows.append(
-                        dict(
-                            order_no=int(m.group(1)),
-                            item_no=int(m.group(2)),
-                            width=float(m.group(3)),
-                            height=float(m.group(4)),
-                            ref=m.group(5).strip(),
-                            rack=rack,
-                            date=date,
-                            labels=labels,
-                            desc=" ".join(extra),
-                        )
-                    )
-                    i = j - 1
-                i += 1
+        cur = None
+        for line, date in stream:
+            m = ITEM_RE.match(line)
+            if m:
+                cur = dict(
+                    order_no=int(m.group(1)), item_no=int(m.group(2)),
+                    width=float(m.group(3)), height=float(m.group(4)),
+                    ref=m.group(5).strip(), desc="", packed=[],
+                )
+                rows.append(cur)
+                continue
+            lm = LABEL_RE.match(line)
+            if lm and cur is not None:
+                rm = RACK_RE.search(line)
+                cur["packed"].append((lm.group(1), rm.group(1) if rm else "Unknown", date))
 
     if not rows:
         return pd.DataFrame()
@@ -116,11 +100,12 @@ def parse_packing_pdfs(file_blobs, weight_factor, color_keywords):
                 weight=sqm * weight_factor, labels=set(), boxes={}, desc=r["desc"],
             )
         it = items[key]
-        new = r["labels"] - it["labels"]  # ignore duplicate labels from overlapping PDFs
-        it["labels"] |= new
-        if new:
-            bk = f"{r['rack']} / {r['date']}"
-            it["boxes"][bk] = it["boxes"].get(bk, 0) + len(new)
+        for label, rack, date in r["packed"]:
+            if label in it["labels"]:  # ignore duplicates from overlapping PDFs
+                continue
+            it["labels"].add(label)
+            bk = f"{rack} / {date}"
+            it["boxes"][bk] = it["boxes"].get(bk, 0) + 1
 
     out = []
     for key in sorted(items):
