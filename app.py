@@ -40,15 +40,7 @@ uploaded_files = st.file_uploader(
 
 
 def fmt_date(s):
-    if not s:
-        return "Unknown"
-    for f in ("%m/%d/%Y", "%d/%m/%Y"):  # adjust order to match your PDF
-        try:
-            d = datetime.strptime(s, f)
-            return f"{d.day}-{d.strftime('%b')}"
-        except ValueError:
-            continue
-    return s
+    return s if s else "Unknown"  # PDF dates are MM/DD/YYYY, e.g. 11/13/2026
 
 
 def detect_color(ref):
@@ -201,16 +193,66 @@ def write_sheet(ws, df, widths, wrap_cols=()):
     ws.auto_filter.ref = ws.dimensions
 
 
+PALETTE = ["F2DCDB", "EBF1DE", "E4DFEC", "FDE9D9", "D9D9D9", "DCE6F1", "FFF2CC", "DAEEF3"]
+
+
+def build_advice_df(df):
+    cols = ["Work Order", "Item No.", "Qty (units)", "Boxes / Delivery Date (Qty)"]
+    return df[cols].copy()
+
+
+def write_advice_sheet(ws, df):
+    """Layout like the photo: one colour band per order + TOTAL row after each order."""
+    df = build_advice_df(df)
+    thin = Side(style="thin", color="D9D9D9")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    headers = ["Work Order", "Item No.", "Qty (units)", "Boxes / Delivery Date (Qty)"]
+    ws.append(headers)
+    for c in range(1, 5):
+        cell = ws.cell(row=1, column=c)
+        cell.fill = PatternFill("solid", start_color="1F497D", end_color="1F497D")
+        cell.font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = border
+
+    row = 2
+    for n, (order, grp) in enumerate(df.groupby("Work Order", sort=True)):
+        fill = PatternFill("solid", start_color=PALETTE[n % len(PALETTE)], end_color=PALETTE[n % len(PALETTE)])
+        for r in grp.itertuples(index=False):
+            vals = [r[0], r[1], r[2], r[3]]
+            for c, v in enumerate(vals, start=1):
+                cell = ws.cell(row=row, column=c, value=v)
+                cell.fill = fill
+                cell.font = Font(name="Calibri", size=10)
+                cell.border = border
+                cell.alignment = Alignment(horizontal="center" if c < 4 else "left", vertical="center")
+            row += 1
+        ws.cell(row=row, column=2, value="TOTAL")
+        ws.cell(row=row, column=3, value=int(grp["Qty (units)"].sum()))
+        for c in (2, 3):
+            cell = ws.cell(row=row, column=c)
+            cell.font = Font(name="Calibri", size=10, bold=True)
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = border
+        row += 1
+    for i, w in enumerate([14, 12, 12, 48], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+
+
 def generate_excel(df_items, df_summary, df_color):
     wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Order Summary"
+    ws0 = wb.active
+    ws0.title = "Delivery Advice"
+    write_advice_sheet(ws0, df_items)
+
+    ws = wb.create_sheet("Order Summary")
     write_sheet(ws, df_summary, [14, 40, 12, 12, 12, 16], wrap_cols=(2,))
 
     ws2 = wb.create_sheet("Qty by Color")
     write_sheet(ws2, df_color, [14, 40, 10])
 
-    ws3 = wb.create_sheet("Delivery Advice")
+    ws3 = wb.create_sheet("Details")
     write_sheet(ws3, df_items, [14, 10, 20, 16, 40, 12, 12, 12, 14, 10, 12, 16, 80], wrap_cols=(5, 13))
 
     out = io.BytesIO()
@@ -269,7 +311,10 @@ if uploaded_files:
         st.subheader("Qty by Color per Work Order")
         st.dataframe(df_color, use_container_width=True, hide_index=True)
 
-        st.subheader("📄 Detailed Delivery Advice")
+        st.subheader("📑 Delivery Advice (Work Order / Item / Qty / Boxes)")
+        st.dataframe(build_advice_df(df), use_container_width=True, hide_index=True)
+
+        st.subheader("📄 Detailed table")
         st.dataframe(df, use_container_width=True, hide_index=True)
 
         st.download_button(
