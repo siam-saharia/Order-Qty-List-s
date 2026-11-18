@@ -371,6 +371,6 @@ if uploaded_files:
         st.download_button(
             "📥 Download Excel (.xlsx)",
             data=generate_excel(df, df_summary, df_color, dup_df),
-            file_name="Delivery_Advice_Consolidated.xlsx",
+            file_name="Order QTY list",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
