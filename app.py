@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter
 st.set_page_config(page_title="Packing List to Order QTY list", layout="wide")
 st.title("📦 Glass Packing List ➔ Order QTY list")
 st.write(
-    "Upload factory **Packing List PDFs** to get a consolidated Delivery Advice "
+    "Upload factory **Packing List PDFs** to get a consolidated Order QTY list "
     "plus a **per-order summary with Color and Quantity**. "
     "Duplicate labels are **counted and highlighted**, not removed."
 )
