@@ -39,14 +39,15 @@ uploaded_files = st.file_uploader(
 )
 
 YELLOW = "FFFF00"
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def fmt_date(s):
     return s if s else "Unknown"
 
 
-def detect_color(ref):
-    found = [k for k in COLOR_KEYWORDS if re.search(re.escape(k), ref, re.I)]
+def detect_color(ref, color_keywords):
+    found = [k for k in color_keywords if re.search(re.escape(k), ref, re.I)]
     found = [k for k in found if not any(k != o and k.lower() in o.lower() for o in found)]
     return " + ".join(found) if found else ""
 
@@ -106,7 +107,7 @@ def parse_packing_pdfs(file_blobs, weight_factor, color_keywords):
                 continue
             it["entries"][k] = 1
 
-    # find labels that appear in MORE THAN ONE box (across all items/PDFs)
+    # labels that appear in MORE THAN ONE box (across all items/PDFs)
     label_locs = defaultdict(set)
     for it in items.values():
         for (label, rack, date) in it["entries"]:
@@ -133,7 +134,7 @@ def parse_packing_pdfs(file_blobs, weight_factor, color_keywords):
         out.append({
             "Work Order": it["order_no"],
             "Item No.": it["item_no"],
-            "Color": detect_color(it["ref"] + " " + it["desc"]),
+            "Color": detect_color(it["ref"] + " " + it["desc"], color_keywords),
             "Reference": it["ref"],
             "Glass Description": it["desc"],
             "Width (mm)": int(it["width"]),
@@ -187,7 +188,7 @@ def write_sheet(ws, df, widths, wrap_cols=(), highlight_col=None):
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border = border
     for r in df.itertuples(index=False):
-        ws.append(list(r))
+        ws.append([v.item() if hasattr(v, "item") else v for v in r])
 
     flags = None
     if highlight_col and highlight_col in df.columns:
@@ -228,12 +229,14 @@ def write_advice_sheet(ws, df):
         cell.border = border
 
     row = 2
+    hl_fill = PatternFill("solid", start_color=YELLOW, end_color=YELLOW)
     for n, (order, grp) in enumerate(df.groupby("Work Order", sort=True)):
-        fill = PatternFill("solid", start_color=PALETTE[n % len(PALETTE)], end_color=PALETTE[n % len(PALETTE)])
-        hl_fill = PatternFill("solid", start_color=YELLOW, end_color=YELLOW)
+        color = PALETTE[n % len(PALETTE)]
+        fill = PatternFill("solid", start_color=color, end_color=color)
         for r in grp.itertuples(index=False):
             has_dup = bool(str(r[4]).strip())
             for c, v in enumerate(list(r), start=1):
+                v = v.item() if hasattr(v, "item") else v
                 cell = ws.cell(row=row, column=c, value=v)
                 cell.fill = hl_fill if has_dup else fill
                 cell.font = Font(name="Calibri", size=10, bold=(has_dup and c == 5),
@@ -251,7 +254,6 @@ def write_advice_sheet(ws, df):
             cell.border = border
         row += 1
 
-    # grand total
     ws.cell(row=row, column=2, value="GRAND TOTAL")
     ws.cell(row=row, column=3, value=int(df["Qty (units)"].sum()))
     for c in (2, 3):
@@ -266,6 +268,7 @@ def write_advice_sheet(ws, df):
 
 
 def generate_excel(df_items, df_summary, df_color, df_dups):
+    """Returns the finished .xlsx as raw bytes."""
     wb = openpyxl.Workbook()
     ws0 = wb.active
     ws0.title = "Delivery Advice"
@@ -289,8 +292,7 @@ def generate_excel(df_items, df_summary, df_color, df_dups):
 
     out = io.BytesIO()
     wb.save(out)
-    out.seek(0)
-    return out
+    return out.getvalue()  # plain bytes: safest for st.download_button
 
 
 def highlight_dups(df):
@@ -368,9 +370,13 @@ if uploaded_files:
         st.subheader("📄 Detailed table")
         st.dataframe(highlight_dups(df), use_container_width=True, hide_index=True)
 
+        # Build the Excel once, then hand the bytes to the button
+        excel_bytes = generate_excel(df, df_summary, df_color, dup_df)
+
         st.download_button(
             "📥 Download Excel (.xlsx)",
-            data=generate_excel(df, df_summary, df_color, dup_df),
-            file_name="Order QTY list",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            data=excel_bytes,
+            file_name="Order QTY list.xlsx",  # <-- .xlsx extension was missing
+            mime=XLSX_MIME,
+            key="download_xlsx",
         )
