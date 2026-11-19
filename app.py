@@ -1,3 +1,4 @@
+import base64
 import io
 import re
 from collections import defaultdict
@@ -11,6 +12,7 @@ from openpyxl.utils import get_column_letter
 
 st.set_page_config(page_title="Packing List to Order QTY list", layout="wide")
 st.title("📦 Glass Packing List ➔ Order QTY list")
+st.caption(f"App version: v3 (xlsx download fix) | Streamlit {st.__version__}")
 st.write(
     "Upload factory **Packing List PDFs** to get a consolidated Order QTY list "
     "plus a **per-order summary with Color and Quantity**. "
@@ -373,10 +375,32 @@ if uploaded_files:
         # Build the Excel once, then hand the bytes to the button
         excel_bytes = generate_excel(df, df_summary, df_color, dup_df)
 
-        st.download_button(
-            "📥 Download Excel (.xlsx)",
-            data=excel_bytes,
-            file_name="Order QTY list.xlsx",  # <-- .xlsx extension was missing
-            mime=XLSX_MIME,
-            key="download_xlsx",
+        FILE_NAME = "Order_QTY_list.xlsx"  # no spaces, ends with .xlsx
+
+        try:
+            # on_click="ignore" stops Streamlit from rerunning the page on click
+            st.download_button(
+                "📥 Download Excel (.xlsx)",
+                data=excel_bytes,
+                file_name=FILE_NAME,
+                mime=XLSX_MIME,
+                key="download_xlsx",
+                on_click="ignore",
+            )
+        except TypeError:  # older Streamlit without on_click="ignore"
+            st.download_button(
+                "📥 Download Excel (.xlsx)",
+                data=excel_bytes,
+                file_name=FILE_NAME,
+                mime=XLSX_MIME,
+                key="download_xlsx",
+            )
+
+        # Backup link: if the button still saves a file with no extension,
+        # use this plain HTML link instead (the filename is set by the browser).
+        b64 = base64.b64encode(excel_bytes).decode()
+        st.markdown(
+            f'<a href="data:{XLSX_MIME};base64,{b64}" download="{FILE_NAME}" '
+            f'style="font-size:15px;">⬇️ Backup download link ({FILE_NAME})</a>',
+            unsafe_allow_html=True,
         )
